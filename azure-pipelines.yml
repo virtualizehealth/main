@@ -4,17 +4,44 @@
 # https://aka.ms/yaml
 # Does this update show up?
 
-trigger:
-- main
+trigger: none  # no CI trigger
+
+schedules:
+  - cron: "0 14 * * 1"  # every Monday at 10 AM ET
+    displayName: Weekly Sync
+    branches:
+      include:
+        - main
+    always: true
 
 pool:
-  vmImage: ubuntu-latest
+  vmImage: 'ubuntu-latest'
+
+variables:
+  containerUrl: "https://vhdcomstor01.blob.core.windows.net/commons-prod"
+  repoFolder: "$(Build.SourcesDirectory)/main"
 
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+  - script: |
+      git clone https://$(GitHubPAT)@github.com/your-org/your-repo.git
+    displayName: 'Clone GitHub Repo'
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+  - task: AzureCLI@2
+    inputs:
+      azureSubscription: 'Virtualize Health(726fbb03-a12a-4620-b068-0c0fe0629c1b)'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        azcopy copy "$(containerUrl)/*" "$(repoFolder)/" --recursive
+    displayName: 'Copy Blobs into Repo'
+
+  - script: |
+      cd $(repoFolder)
+      git add .
+      if git diff --cached --quiet; then
+        echo "No changes to commit."
+      else
+        git commit -m "Weekly sync from Azure Blob - $(Build.BuildId)"
+        git push origin main
+      fi
+    displayName: 'Commit & Push if Changed'
