@@ -48,6 +48,8 @@ steps:
         echo "No changes to commit."
       else
         git commit -m "Weekly sync from Azure Blob - $(Build.BuildId)"
+        # Set remote URL to include PAT for pushing
+        git remote set-url origin https://$(gitHubPAT)@github.com/your-org/your-repo.git
         git push origin main
       fi
     displayName: 'Commit & Push if Changed'
