@@ -29,7 +29,7 @@ steps:
   - task: AzureCLI@2
     inputs:
       azureSubscription: 'Virtualize Health(726fbb03-a12a-4620-b068-0c0fe0629c1b)'
-      scriptType: 'ps'
+      scriptType: 'bash'
       scriptLocation: 'inlineScript'
       inlineScript: |
         azcopy copy "$(containerUrl)/*" "$(repoFolder)/" --recursive
