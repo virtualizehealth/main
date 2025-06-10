@@ -1,7 +1,7 @@
-trigger: none  # No CI trigger
+trigger: none
 
 schedules:
-  - cron: "0 14 * * 1"  # Every Monday at 10 AM ET
+  - cron: "0 14 * * 1" # Every Monday at 10 AM ET
     displayName: Weekly Sync
     branches:
       include:
@@ -10,12 +10,12 @@ schedules:
 
 variables:
   containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod'
-  syncFolderName: 'ADLS_BackUp_Files'
+  syncFolderName: 'synced-files'
   backupPrefix: 'backup'
 
 jobs:
 - job: sync_and_backup
-  displayName: 'Sync Azure Blob and Backup to GitHub'
+  displayName: 'Backup, Sync, and Prune'
   pool:
     vmImage: 'windows-latest'
 
@@ -25,97 +25,28 @@ jobs:
       fetchDepth: 0
 
     - task: PowerShell@2
-      displayName: 'Install AzCopy to Temp Directory'
+      displayName: 'Configure Git'
       inputs:
         targetType: 'inline'
         script: |
-          # Define a path in the agent's temp directory to isolate build tools
-          $azcopyPath = Join-Path -Path "$(Agent.TempDirectory)" -ChildPath "azcopy"
-          New-Item -ItemType Directory -Path $azcopyPath -Force
-
-          # Download and expand AzCopy outside of the source code directory
-          $zipFile = Join-Path $azcopyPath "azcopy.zip"
-          Invoke-WebRequest -Uri https://aka.ms/downloadazcopy-v10-windows -OutFile $zipFile
-          Expand-Archive $zipFile -DestinationPath $azcopyPath -Force
-
-          # Find and set the path to the executable
-          $azcopyExe = Get-ChildItem -Path $azcopyPath -Recurse -Filter "azcopy.exe" | Select-Object -First 1
-          Write-Host "AzCopy located at $($azcopyExe.FullName)"
-          echo "##vso[task.setvariable variable=AZCOPY_EXE]$($azcopyExe.FullName)"
-
-    - task: AzureCLI@2
-      displayName: 'Sync Blobs (with deletes) into Repo Subfolder'
-      inputs:
-        azureSubscription: 'Virtualize Health(726fbb03-a12a-4620-b068-0c0fe0629c1b)'
-        scriptType: 'ps'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          $ErrorActionPreference = "Stop"
-
-          $safeSyncFolderPath = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
-          Write-Host "Syncing to path: $safeSyncFolderPath"
-
-          New-Item -ItemType Directory -Path $safeSyncFolderPath -Force
-
-          # Use the AzCopy executable from the temp directory
-          & "$(AZCOPY_EXE)" sync "$(containerUrl)" $safeSyncFolderPath --recursive --delete-destination=true
-
-    - task: PowerShell@2
-      displayName: 'Always Commit and Push to Main'
-      inputs:
-        targetType: 'inline'
-        script: |
-          $ErrorActionPreference = "Stop"
-
           git config --global user.email "gabriel@virtualizehealth.com"
           git config --global user.name "virtualizehealth"
 
-          Set-Location "$(Build.SourcesDirectory)"
-          if (-not (Test-Path ".git")) {
-            Write-Error ".git folder not found."
-          }
-
-          Write-Host "Switching to the main branch..."
-          git checkout main
-          git pull origin main
-
-          # Define source and destination paths
-          $syncDir = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
-          $copySource = Join-Path -Path $syncDir -ChildPath "*"
-          
-          # Copy synced items from the subfolder to the repository root
-          Write-Host "Copying items from $syncDir to $(Build.SourcesDirectory)"
-          Copy-Item -Path $copySource -Destination "$(Build.SourcesDirectory)" -Recurse -Force
-
-          # *** FIX: Remove the temporary sync folder before adding files to Git ***
-          Write-Host "Removing temporary sync folder: $syncDir"
-          Remove-Item -Path $syncDir -Recurse -Force
-
-          # Stage all changes in the repository
-          # AzCopy files are in $(Agent.TempDirectory) and will be ignored.
-          # The synced-files folder has been removed.
-          git add -A
-
-          # Use git diff-index to see if there are changes to commit
-          if (-not (git diff-index --quiet HEAD --)) {
-            Write-Host "Changes detected. Committing..."
-            git commit -m "Weekly sync from Azure Blob - $env:BUILD_BUILDID"
-          } else {
-            Write-Host "No changes detected. Nothing to commit."
-          }
-
-          Write-Host "Pushing changes to origin/main..."
-          git push origin main
-
     - task: PowerShell@2
-      displayName: 'Create Backup Snapshot Branch and Prune Old Backups'
+      displayName: 'Create Backup Branch from Previous State'
       inputs:
         targetType: 'inline'
         script: |
           $ErrorActionPreference = "Stop"
-          cd "$(Build.SourcesDirectory)"
+          
+          Write-Host "Switching to the main branch to create a pre-update backup..."
+          git checkout main
+          git pull origin main
 
-          $oldBranch = "main"
+          # This is the state we want to back up
+          Write-Host "Current HEAD of main is the state that will be backed up."
+
+          # Generate a unique backup branch name (e.g., backup/2025-06-10A)
           $dtNow = Get-Date -UFormat "%Y-%m-%d"
           $branchPrefix = "$(backupPrefix)/$dtNow"
           $repoList = git branch -r
@@ -130,16 +61,83 @@ jobs:
           }
 
           $newBranch = "$branchPrefix" + [char]$suffix
+          Write-Host "Creating new backup branch: $newBranch"
+          
           git checkout -b $newBranch
           git push -u origin $newBranch
 
-          # Corrected line is in the Where-Object clause below
-          $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
+          # Set a pipeline variable to use in the pruning step later
+          echo "##vso[task.setvariable variable=newBackupBranch]$newBranch"
+
+          Write-Host "Backup created. Switching back to main to apply updates."
+          git checkout main
+
+    - task: PowerShell@2
+      displayName: 'Install AzCopy to Temp Directory'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $azcopyPath = Join-Path -Path "$(Agent.TempDirectory)" -ChildPath "azcopy"
+          New-Item -ItemType Directory -Path $azcopyPath -Force
+          $zipFile = Join-Path $azcopyPath "azcopy.zip"
+          Invoke-WebRequest -Uri https://aka.ms/downloadazcopy-v10-windows -OutFile $zipFile
+          Expand-Archive $zipFile -DestinationPath $azcopyPath -Force
+          $azcopyExe = Get-ChildItem -Path $azcopyPath -Recurse -Filter "azcopy.exe" | Select-Object -First 1
+          echo "##vso[task.setvariable variable=AZCOPY_EXE]$($azcopyExe.FullName)"
+
+    - task: AzureCLI@2
+      displayName: 'Sync Blobs into Repo Subfolder'
+      inputs:
+        azureSubscription: 'Virtualize Health(726fbb03-a12a-4620-b068-0c0fe0629c1b)'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $ErrorActionPreference = "Stop"
+          $safeSyncFolderPath = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
+          New-Item -ItemType Directory -Path $safeSyncFolderPath -Force
+          & "$(AZCOPY_EXE)" sync "$(containerUrl)" $safeSyncFolderPath --recursive --delete-destination=true
+
+    - task: PowerShell@2
+      displayName: 'Commit and Push Updates to main'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $ErrorActionPreference = "Stop"
+          Set-Location "$(Build.SourcesDirectory)"
+          
+          # The pipeline is already on the 'main' branch from the backup step
+          $syncDir = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
+          $copySource = Join-Path -Path $syncDir -ChildPath "*"
+          
+          Write-Host "Copying items from $syncDir to $(Build.SourcesDirectory)"
+          Copy-Item -Path $copySource -Destination "$(Build.SourcesDirectory)" -Recurse -Force
+          Remove-Item -Path $syncDir -Recurse -Force
+
+          git add -A
+
+          if (-not (git diff-index --quiet HEAD --)) {
+            Write-Host "Changes detected. Committing to main..."
+            git commit -m "Weekly sync from Azure Blob - $env:BUILD_BUILDID"
+            Write-Host "Pushing changes to origin/main..."
+            git push origin main
+          } else {
+            Write-Host "No changes detected. Nothing to commit."
+          }
+
+    - task: PowerShell@2
+      displayName: 'Prune Old Backup Branches'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $ErrorActionPreference = "Stop"
+          $newBranchToKeep = "$(newBackupBranch)" # Get the variable from the previous task
+
+          Write-Host "Keeping new backup branch: $newBranchToKeep"
+
+          git branch -r | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
             $branchToDelete = $_.Trim().Substring(7)
-            if ($branchToDelete -ne $newBranch) {
-              Write-Host "Deleting old branch: $branchToDelete"
+            if ($branchToDelete -ne $newBranchToKeep) {
+              Write-Host "Deleting old backup branch: $branchToDelete"
               git push origin --delete $branchToDelete
             }
           }
-
-          git checkout $oldBranch
