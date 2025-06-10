@@ -10,8 +10,7 @@ schedules:
 
 variables:
   containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod'
-  repoFolder: '$(Build.SourcesDirectory)'
-  syncFolder: '$(Build.SourcesDirectory)/synced'
+  syncFolder: '$(Build.SourcesDirectory)/synced-files'
   backupPrefix: 'backup'
 
 jobs:
@@ -24,15 +23,26 @@ jobs:
     - checkout: self
       persistCredentials: true
 
+    - task: PowerShell@2
+      displayName: 'Install AzCopy'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Invoke-WebRequest -Uri https://aka.ms/downloadazcopy-v10-windows -OutFile azcopy.zip
+          Expand-Archive azcopy.zip -DestinationPath . -Force
+          $azCopyPath = Get-ChildItem -Recurse -Filter "azcopy.exe" | Select-Object -First 1
+          echo "##vso[task.setvariable variable=AZCOPY_EXE]$($azCopyPath.FullName)"
+
     - task: AzureCLI@2
       displayName: 'Sync Blobs (with deletes) into Repo Subfolder'
       inputs:
         azureSubscription: 'Virtualize Health(726fbb03-a12a-4620-b068-0c0fe0629c1b)'
-        scriptType: 'bash'
+        scriptType: 'ps'
         scriptLocation: 'inlineScript'
         inlineScript: |
-          mkdir -p "$(syncFolder)"
-          azcopy sync "$(containerUrl)" "$(syncFolder)" --recursive --delete-destination=true
+          $ErrorActionPreference = "Stop"
+          mkdir "$(syncFolder)" -Force
+          & "$(AZCOPY_EXE)" sync "$(containerUrl)" "$(syncFolder)" --recursive --delete-destination=true
 
     - task: PowerShell@2
       displayName: 'Always Commit and Push to Main'
@@ -42,18 +52,14 @@ jobs:
           git config --global user.email "gabriel@virtualizehealth.com"
           git config --global user.name "virtualizehealth"
 
-          Set-Location "$(repoFolder)"
-
+          Set-Location "$(Build.SourcesDirectory)"
           if (-not (Test-Path ".git")) {
             Write-Error ".git folder not found. Make sure you're in a Git repo."
             exit 1
           }
 
           git checkout main
-
-          # Copy synced files into repo folder
-          Copy-Item -Path "$(syncFolder)\*" -Destination "$(repoFolder)" -Recurse -Force
-
+          Copy-Item -Path "$(syncFolder)\*" -Destination "$(Build.SourcesDirectory)" -Recurse -Force
           git add -A
           git commit -m "Weekly sync from Azure Blob - $env:BUILD_BUILDID" --allow-empty
           git push origin main
@@ -64,7 +70,7 @@ jobs:
         targetType: 'inline'
         script: |
           $ErrorActionPreference = "Stop"
-          cd "$(repoFolder)"
+          cd "$(Build.SourcesDirectory)"
 
           $oldBranch = "main"
           $dtNow = Get-Date -UFormat "%Y-%m-%d"
@@ -84,7 +90,6 @@ jobs:
           git checkout -b $newBranch
           git push -u origin $newBranch
 
-          # Optional cleanup of older branches starting with the same prefix
           $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
             $branchToDelete = $_.Trim().Substring(7)
             if ($branchToDelete -ne $newBranch) {
