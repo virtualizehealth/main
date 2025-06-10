@@ -38,7 +38,6 @@ jobs:
 
       cd $(repoFolder)
       
-      # Commit to main
       git checkout main || git checkout -b main
       git add .
 
