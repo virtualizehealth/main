@@ -1,30 +1,26 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-# Does this update show up?
-
-trigger: none  # no CI trigger
+trigger: none  # No CI trigger
 
 schedules:
-  - cron: "0 14 * * 1"  # every Monday at 10 AM ET
+  - cron: "0 14 * * 1"  # Every Monday at 10 AM ET
     displayName: Weekly Sync
     branches:
       include:
         - main
     always: true
 
-pool:
-  vmImage: 'ubuntu-latest'
-
 variables:
-  containerUrl: "https://vhdcomstor01.blob.core.windows.net/commons-prod"
-  repoFolder: "$(Build.SourcesDirectory)/main"
+  repoFolder: '$(Build.SourcesDirectory)'
+  backupPrefix: 'backup'
 
-steps:
-  - script: |
-      git clone https://$(GitHubPAT)@github.com/your-org/your-repo.git
-    displayName: 'Clone GitHub Repo'
+jobs:
+- job: sync_and_backup
+  displayName: Sync Azure Blob and Backup GitHub
+  pool:
+    vmImage: 'windows-latest'
+  steps:
+
+  - checkout: self
+    persistCredentials: true
 
   - task: AzureCLI@2
     inputs:
@@ -40,16 +36,52 @@ steps:
       git config --global user.name "virtualizehealth"
 
       cd $(repoFolder)
+      
+      # Commit to main
       git checkout main || git checkout -b main
-
       git add .
 
       if git diff --cached --quiet; then
         echo "No changes to commit."
       else
         git commit -m "Weekly sync from Azure Blob - $(Build.BuildId)"
-        # Set remote URL to include PAT for pushing
-        git remote set-url origin https://$(gitHubPAT)@github.com/your-org/your-repo.git
         git push origin main
       fi
-    displayName: 'Commit & Push if Changed'
+    displayName: 'Commit to Main if Changed'
+
+  - task: PowerShell@2
+    displayName: 'Create Backup Snapshot Branch'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $ErrorActionPreference = "Stop"
+        cd "$(repoFolder)"
+
+        $oldBranch = "main"
+        $dtNow = Get-Date -UFormat "%Y-%m-%d"
+        $branchPrefix = "$(backupPrefix)/$dtNow"
+        $repoList = git branch -r
+        $suffix = [int][char]"A"
+
+        $repoList.Split("`n") | ForEach-Object {
+          $line = $_.Trim()
+          if ($line.StartsWith("origin/" + $branchPrefix)) {
+            $testSuffix = [int][char]($line.Substring($branchPrefix.Length + 7))
+            if ($testSuffix -ge $suffix) { $suffix = $testSuffix + 1 }
+          }
+        }
+
+        $newBranch = "$branchPrefix" + [char]$suffix
+        git checkout -b $newBranch
+        git push -u origin $newBranch
+
+        # Optional cleanup of older branches starting with the same prefix
+        $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
+          $branchToDelete = $_.Trim().Substring(7)
+          if ($branchToDelete -ne $newBranch) {
+            Write-Host "Deleting old branch: $branchToDelete"
+            git push origin --delete $branchToDelete
+          }
+        }
+
+        git checkout $oldBranch
