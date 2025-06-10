@@ -18,6 +18,7 @@ jobs:
   displayName: Sync Azure Blob and Backup GitHub
   pool:
     vmImage: 'windows-latest'
+
   steps:
     - checkout: self
       persistCredentials: true
@@ -32,7 +33,7 @@ jobs:
           azcopy sync "$(containerUrl)" "$(repoFolder)" --recursive --delete-destination=true
 
     - task: PowerShell@2
-      displayName: 'Commit to Main if Changed'
+      displayName: 'Always Commit and Push to Main'
       inputs:
         targetType: 'inline'
         script: |
@@ -41,7 +42,6 @@ jobs:
 
           Set-Location "$(repoFolder)"
 
-          # Ensure we're inside a git repo
           if (-not (Test-Path ".git")) {
             Write-Error ".git folder not found. Make sure you're in a Git repo."
             exit 1
@@ -49,17 +49,9 @@ jobs:
 
           git checkout main
 
-          # Stage all changes, including deletions
           git add -A
-
-          # Check for staged changes (add -A to catch deletions)
-          git diff --staged --quiet
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "No changes to commit."
-          } else {
-            git commit -m "Weekly sync from Azure Blob - $env:BUILD_BUILDID"
-            git push origin main
-          }
+          git commit -m "Weekly sync from Azure Blob - $env:BUILD_BUILDID" --allow-empty
+          git push origin main
 
     - task: PowerShell@2
       displayName: 'Create Backup Snapshot Branch'
@@ -87,7 +79,6 @@ jobs:
           git checkout -b $newBranch
           git push -u origin $newBranch
 
-          # Optional cleanup of older branches starting with the same prefix
           $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
             $branchToDelete = $_.Trim().Substring(7)
             if ($branchToDelete -ne $newBranch) {
