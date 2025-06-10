@@ -9,11 +9,8 @@ schedules:
     always: true
 
 variables:
-  # The container URL remains the same.
   containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod'
-  # We will no longer use the syncFolder variable directly to build paths.
-  # We define the folder name here and construct the full path within the scripts.
-  syncFolderName: 'synced-files'
+  syncFolderName: 'ADLS_BackUp_Files'
   backupPrefix: 'backup'
 
 jobs:
@@ -25,18 +22,26 @@ jobs:
   steps:
     - checkout: self
       persistCredentials: true
-      fetchDepth: 0  # <-- ADD THIS LINE to perform a full clone
+      fetchDepth: 0
 
     - task: PowerShell@2
-      displayName: 'Install AzCopy'
+      displayName: 'Install AzCopy to Temp Directory'
       inputs:
         targetType: 'inline'
         script: |
-          # This task remains the same.
-          Invoke-WebRequest -Uri https://aka.ms/downloadazcopy-v10-windows -OutFile azcopy.zip
-          Expand-Archive azcopy.zip -DestinationPath . -Force
-          $azCopyPath = Get-ChildItem -Recurse -Filter "azcopy.exe" | Select-Object -First 1
-          echo "##vso[task.setvariable variable=AZCOPY_EXE]$($azCopyPath.FullName)"
+          # Define a path in the agent's temp directory to isolate build tools
+          $azcopyPath = Join-Path -Path "$(Agent.TempDirectory)" -ChildPath "azcopy"
+          New-Item -ItemType Directory -Path $azcopyPath -Force
+
+          # Download and expand AzCopy outside of the source code directory
+          $zipFile = Join-Path $azcopyPath "azcopy.zip"
+          Invoke-WebRequest -Uri https://aka.ms/downloadazcopy-v10-windows -OutFile $zipFile
+          Expand-Archive $zipFile -DestinationPath $azcopyPath -Force
+
+          # Find and set the path to the executable
+          $azcopyExe = Get-ChildItem -Path $azcopyPath -Recurse -Filter "azcopy.exe" | Select-Object -First 1
+          Write-Host "AzCopy located at $($azcopyExe.FullName)"
+          echo "##vso[task.setvariable variable=AZCOPY_EXE]$($azcopyExe.FullName)"
 
     - task: AzureCLI@2
       displayName: 'Sync Blobs (with deletes) into Repo Subfolder'
@@ -47,15 +52,12 @@ jobs:
         inlineScript: |
           $ErrorActionPreference = "Stop"
 
-          # FIX: Use Join-Path to create a robust, OS-native path.
-          # This avoids the "inconsistent path separators" panic from AzCopy.
           $safeSyncFolderPath = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
           Write-Host "Syncing to path: $safeSyncFolderPath"
 
-          # Ensure the directory exists using the safe path
           New-Item -ItemType Directory -Path $safeSyncFolderPath -Force
 
-          # Use the safe path when calling AzCopy
+          # Use the AzCopy executable from the temp directory
           & "$(AZCOPY_EXE)" sync "$(containerUrl)" $safeSyncFolderPath --recursive --delete-destination=true
 
     - task: PowerShell@2
@@ -63,7 +65,6 @@ jobs:
       inputs:
         targetType: 'inline'
         script: |
-          # ADD THIS LINE: Ensures the script will stop immediately if any command fails.
           $ErrorActionPreference = "Stop"
 
           git config --global user.email "gabriel@virtualizehealth.com"
@@ -74,20 +75,25 @@ jobs:
             Write-Error ".git folder not found."
           }
 
-          # Because of 'fetchDepth: 0', this command will now succeed.
           Write-Host "Switching to the main branch..."
           git checkout main
-
-          # It's also good practice to ensure it's up-to-date.
           git pull origin main
 
-          # Now that we are on the correct branch, copy the synced files
-          $safeSyncFolderPath = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
-          $copySourcePath = Join-Path -Path $safeSyncFolderPath -ChildPath "*"
+          # Define source and destination paths
+          $syncDir = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
+          $copySource = Join-Path -Path $syncDir -ChildPath "*"
           
-          Write-Host "Copying items from $safeSyncFolderPath to $(Build.SourcesDirectory)"
-          Copy-Item -Path $copySourcePath -Destination "$(Build.sourcesdirectory)" -Recurse -Force
+          # Copy synced items from the subfolder to the repository root
+          Write-Host "Copying items from $syncDir to $(Build.SourcesDirectory)"
+          Copy-Item -Path $copySource -Destination "$(Build.SourcesDirectory)" -Recurse -Force
 
+          # *** FIX: Remove the temporary sync folder before adding files to Git ***
+          Write-Host "Removing temporary sync folder: $syncDir"
+          Remove-Item -Path $syncDir -Recurse -Force
+
+          # Stage all changes in the repository
+          # AzCopy files are in $(Agent.TempDirectory) and will be ignored.
+          # The synced-files folder has been removed.
           git add -A
 
           # Use git diff-index to see if there are changes to commit
@@ -100,13 +106,12 @@ jobs:
 
           Write-Host "Pushing changes to origin/main..."
           git push origin main
+
     - task: PowerShell@2
       displayName: 'Create Backup Snapshot Branch and Prune Old Backups'
       inputs:
         targetType: 'inline'
         script: |
-          # This task does not deal with file paths and needs no changes for the separator issue.
-          # It has been left as is.
           $ErrorActionPreference = "Stop"
           cd "$(Build.SourcesDirectory)"
 
@@ -130,12 +135,5 @@ jobs:
 
           # Optional: Logic to delete only one old branch per run can be added here
           # For now, this deletes all other backup branches.
-          $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
-            $branchToDelete = $_.Trim().Substring(7)
-            if ($branchToDelete -ne $newBranch) {
-              Write-Host "Deleting old branch: $branchToDelete"
-              git push origin --delete $branchToDelete
-            }
-          }
-
-          git checkout $oldBranch
+          $repoList.Split("`n") | Where-Object { <span class="math-inline">\_\.Trim\(\)\.StartsWith\("origin/</span>(backupPrefix)/") } | ForEach-Object {
+            $branchToDelete =
