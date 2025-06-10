@@ -133,7 +133,13 @@ jobs:
           git checkout -b $newBranch
           git push -u origin $newBranch
 
-          # Optional: Logic to delete only one old branch per run can be added here
-          # For now, this deletes all other backup branches.
-          $repoList.Split("`n") | Where-Object { <span class="math-inline">\_\.Trim\(\)\.StartsWith\("origin/</span>(backupPrefix)/") } | ForEach-Object {
-            $branchToDelete =
+          # Corrected line is in the Where-Object clause below
+          $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
+            $branchToDelete = $_.Trim().Substring(7)
+            if ($branchToDelete -ne $newBranch) {
+              Write-Host "Deleting old branch: $branchToDelete"
+              git push origin --delete $branchToDelete
+            }
+          }
+
+          git checkout $oldBranch
