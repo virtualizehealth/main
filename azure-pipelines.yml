@@ -19,69 +19,80 @@ jobs:
   pool:
     vmImage: 'windows-latest'
   steps:
+    - checkout: self
+      persistCredentials: true
 
-  - checkout: self
-    persistCredentials: true
+    - task: AzureCLI@2
+      displayName: 'Copy Blobs into Repo'
+      inputs:
+        azureSubscription: 'Virtualize Health(726fbb03-a12a-4620-b068-0c0fe0629c1b)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          azcopy copy "$(containerUrl)/*" "$(repoFolder)/" --recursive
 
-  - task: AzureCLI@2
-    inputs:
-      azureSubscription: 'Virtualize Health(726fbb03-a12a-4620-b068-0c0fe0629c1b)'
-      scriptType: 'bash'
-      scriptLocation: 'inlineScript'
-      inlineScript: |
-        azcopy copy "$(containerUrl)/*" "$(repoFolder)/" --recursive
-    displayName: 'Copy Blobs into Repo'
+    - task: PowerShell@2
+      displayName: 'Commit to Main if Changed'
+      inputs:
+        targetType: 'inline'
+        script: |
+          git config --global user.email "gabriel@virtualizehealth.com"
+          git config --global user.name "virtualizehealth"
 
-  - script: |
-      git config --global user.email "gabriel@virtualizehealth.com"
-      git config --global user.name "virtualizehealth"
+          Set-Location "$(repoFolder)"
 
-      cd $(repoFolder)
-      
-      git checkout main || git checkout -b main
-      git add .
-
-      if git diff --cached --quiet; then
-        echo "No changes to commit."
-      else
-        git commit -m "Weekly sync from Azure Blob - $(Build.BuildId)"
-        git push origin main
-      fi
-    displayName: 'Commit to Main if Changed'
-
-  - task: PowerShell@2
-    displayName: 'Create Backup Snapshot Branch'
-    inputs:
-      targetType: 'inline'
-      script: |
-        $ErrorActionPreference = "Stop"
-        cd "$(repoFolder)"
-
-        $oldBranch = "main"
-        $dtNow = Get-Date -UFormat "%Y-%m-%d"
-        $branchPrefix = "$(backupPrefix)/$dtNow"
-        $repoList = git branch -r
-        $suffix = [int][char]"A"
-
-        $repoList.Split("`n") | ForEach-Object {
-          $line = $_.Trim()
-          if ($line.StartsWith("origin/" + $branchPrefix)) {
-            $testSuffix = [int][char]($line.Substring($branchPrefix.Length + 7))
-            if ($testSuffix -ge $suffix) { $suffix = $testSuffix + 1 }
+          # Check if 'main' branch exists
+          $branchExists = git branch --list main
+          if (-not $branchExists) {
+            git checkout -b main
+          } else {
+            git checkout main
           }
-        }
 
-        $newBranch = "$branchPrefix" + [char]$suffix
-        git checkout -b $newBranch
-        git push -u origin $newBranch
+          git add .
 
-        # Optional cleanup of older branches starting with the same prefix
-        $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
-          $branchToDelete = $_.Trim().Substring(7)
-          if ($branchToDelete -ne $newBranch) {
-            Write-Host "Deleting old branch: $branchToDelete"
-            git push origin --delete $branchToDelete
+          # Check for staged changes
+          $hasChanges = git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "No changes to commit."
+          } else {
+            git commit -m "Weekly sync from Azure Blob - $env:BUILD_BUILDID"
+            git push origin main
           }
-        }
 
-        git checkout $oldBranch
+    - task: PowerShell@2
+      displayName: 'Create Backup Snapshot Branch'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $ErrorActionPreference = "Stop"
+          cd "$(repoFolder)"
+
+          $oldBranch = "main"
+          $dtNow = Get-Date -UFormat "%Y-%m-%d"
+          $branchPrefix = "$(backupPrefix)/$dtNow"
+          $repoList = git branch -r
+          $suffix = [int][char]"A"
+
+          $repoList.Split("`n") | ForEach-Object {
+            $line = $_.Trim()
+            if ($line.StartsWith("origin/" + $branchPrefix)) {
+              $testSuffix = [int][char]($line.Substring($branchPrefix.Length + 7))
+              if ($testSuffix -ge $suffix) { $suffix = $testSuffix + 1 }
+            }
+          }
+
+          $newBranch = "$branchPrefix" + [char]$suffix
+          git checkout -b $newBranch
+          git push -u origin $newBranch
+
+          # Optional cleanup of older branches starting with the same prefix
+          $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
+            $branchToDelete = $_.Trim().Substring(7)
+            if ($branchToDelete -ne $newBranch) {
+              Write-Host "Deleting old branch: $branchToDelete"
+              git push origin --delete $branchToDelete
+            }
+          }
+
+          git checkout $oldBranch
