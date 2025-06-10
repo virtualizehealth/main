@@ -9,6 +9,7 @@ schedules:
     always: true
 
 variables:
+  containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod'
   repoFolder: '$(Build.SourcesDirectory)'
   backupPrefix: 'backup'
 
