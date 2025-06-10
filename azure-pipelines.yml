@@ -9,13 +9,16 @@ schedules:
     always: true
 
 variables:
+  # The container URL remains the same.
   containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod'
-  syncFolder: '$(Build.SourcesDirectory)/synced-files'
+  # We will no longer use the syncFolder variable directly to build paths.
+  # We define the folder name here and construct the full path within the scripts.
+  syncFolderName: 'synced-files'
   backupPrefix: 'backup'
 
 jobs:
 - job: sync_and_backup
-  displayName: Sync Azure Blob and Backup GitHub
+  displayName: 'Sync Azure Blob and Backup to GitHub'
   pool:
     vmImage: 'windows-latest'
 
@@ -28,6 +31,7 @@ jobs:
       inputs:
         targetType: 'inline'
         script: |
+          # This task remains the same.
           Invoke-WebRequest -Uri https://aka.ms/downloadazcopy-v10-windows -OutFile azcopy.zip
           Expand-Archive azcopy.zip -DestinationPath . -Force
           $azCopyPath = Get-ChildItem -Recurse -Filter "azcopy.exe" | Select-Object -First 1
@@ -41,8 +45,17 @@ jobs:
         scriptLocation: 'inlineScript'
         inlineScript: |
           $ErrorActionPreference = "Stop"
-          mkdir "$(syncFolder)" -Force
-          & "$(AZCOPY_EXE)" sync "$(containerUrl)" "$(syncFolder)" --recursive --delete-destination=true
+
+          # FIX: Use Join-Path to create a robust, OS-native path.
+          # This avoids the "inconsistent path separators" panic from AzCopy.
+          $safeSyncFolderPath = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
+          Write-Host "Syncing to path: $safeSyncFolderPath"
+
+          # Ensure the directory exists using the safe path
+          New-Item -ItemType Directory -Path $safeSyncFolderPath -Force
+
+          # Use the safe path when calling AzCopy
+          & "$(AZCOPY_EXE)" sync "$(containerUrl)" $safeSyncFolderPath --recursive --delete-destination=true
 
     - task: PowerShell@2
       displayName: 'Always Commit and Push to Main'
@@ -59,16 +72,26 @@ jobs:
           }
 
           git checkout main
-          Copy-Item -Path "$(syncFolder)\*" -Destination "$(Build.SourcesDirectory)" -Recurse -Force
+
+          # FIX: Use Join-Path again for consistency and safety.
+          $safeSyncFolderPath = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
+          $copySourcePath = Join-Path -Path $safeSyncFolderPath -ChildPath "*"
+
+          # Copy the synced content to the repository root
+          Write-Host "Copying items from $safeSyncFolderPath to $(Build.SourcesDirectory)"
+          Copy-Item -Path $copySourcePath -Destination "$(Build.SourcesDirectory)" -Recurse -Force
+
           git add -A
           git commit -m "Weekly sync from Azure Blob - $env:BUILD_BUILDID" --allow-empty
           git push origin main
 
     - task: PowerShell@2
-      displayName: 'Create Backup Snapshot Branch'
+      displayName: 'Create Backup Snapshot Branch and Prune Old Backups'
       inputs:
         targetType: 'inline'
         script: |
+          # This task does not deal with file paths and needs no changes for the separator issue.
+          # It has been left as is.
           $ErrorActionPreference = "Stop"
           cd "$(Build.SourcesDirectory)"
 
@@ -90,6 +113,8 @@ jobs:
           git checkout -b $newBranch
           git push -u origin $newBranch
 
+          # Optional: Logic to delete only one old branch per run can be added here
+          # For now, this deletes all other backup branches.
           $repoList.Split("`n") | Where-Object { $_.Trim().StartsWith("origin/$(backupPrefix)/") } | ForEach-Object {
             $branchToDelete = $_.Trim().Substring(7)
             if ($branchToDelete -ne $newBranch) {
