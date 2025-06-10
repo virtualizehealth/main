@@ -41,18 +41,19 @@ jobs:
 
           Set-Location "$(repoFolder)"
 
-          # Check if 'main' branch exists
-          $branchExists = git branch --list main
-          if (-not $branchExists) {
-            git checkout -b main
-          } else {
-            git checkout main
+          # Ensure we're inside a git repo
+          if (-not (Test-Path ".git")) {
+            Write-Error ".git folder not found. Make sure you're in a Git repo."
+            exit 1
           }
 
-          git add .
+          git checkout main
 
-          # Check for staged changes
-          $hasChanges = git diff --cached --quiet
+          # Stage all changes, including deletions
+          git add -A
+
+          # Check for staged changes (add -A to catch deletions)
+          git diff --staged --quiet
           if ($LASTEXITCODE -eq 0) {
             Write-Host "No changes to commit."
           } else {
