@@ -71,20 +71,23 @@ jobs:
             exit 1
           }
 
-          git checkout main
+          # FIX: Handle detached HEAD by creating a local 'main' branch
+          # that tracks the remote 'origin/main'. This is the key change.
+          Write-Host "Ensuring we are on the main branch..."
+          git checkout -B main origin/main
 
-          # FIX: Use Join-Path again for consistency and safety.
+          # Now that we are on the correct branch, copy the synced files
           $safeSyncFolderPath = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(syncFolderName)"
           $copySourcePath = Join-Path -Path $safeSyncFolderPath -ChildPath "*"
-
-          # Copy the synced content to the repository root
+          
           Write-Host "Copying items from $safeSyncFolderPath to $(Build.SourcesDirectory)"
           Copy-Item -Path $copySourcePath -Destination "$(Build.SourcesDirectory)" -Recurse -Force
 
           git add -A
           git commit -m "Weekly sync from Azure Blob - $env:BUILD_BUILDID" --allow-empty
+          
+          Write-Host "Pushing changes to origin/main..."
           git push origin main
-
     - task: PowerShell@2
       displayName: 'Create Backup Snapshot Branch and Prune Old Backups'
       inputs:
