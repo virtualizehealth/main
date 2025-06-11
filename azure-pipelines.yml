@@ -68,10 +68,17 @@ jobs:
         scriptLocation: 'inlineScript'
         inlineScript: |
           $ErrorActionPreference = "Stop"
-          $targetFolderPath = Join-Path "$(Build.SourcesDirectory)" "$(targetFolderName)"
-          Write-Host "Syncing files from container to $targetFolderPath"
-          New-Item -ItemType Directory -Path $targetFolderPath -Force
-          & "$(AZCOPY_EXE)" sync "$(containerUrl)" $targetFolderPath --recursive --delete-destination=true
+          $uri = [System.Uri]"$(containerUrl)"
+          $sourceFolderName = $uri.AbsolutePath.TrimEnd('/').Split('/')[-1]
+          Write-Host "Determined source folder name to be: $sourceFolderName"
+
+          $parentFolderPath = Join-Path "$(Build.SourcesDirectory)" "$(targetFolderName)"
+          $syncDestinationPath = Join-Path -Path $parentFolderPath -ChildPath $sourceFolderName
+
+          New-Item -ItemType Directory -Path $parentFolderPath -Force
+
+          Write-Host "Syncing files from container to $syncDestinationPath"
+          & "$(AZCOPY_EXE)" sync "$(containerUrl)" $syncDestinationPath --recursive --delete-destination=true
 
     # STEP 5: COMMIT AND PUSH UPDATES
     - task: PowerShell@2
