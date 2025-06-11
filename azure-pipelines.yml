@@ -60,8 +60,8 @@ jobs:
       inputs:
         targetType: 'inline'
         script: |
-          git config --global user.email "gabriel@virtualizehealth.com"
-          git config --global user.name "virtualizehealth"
+          git config --global user.email "automation@gmail.com"
+          git config --global user.name "automation"
 
     # STEP 3: CREATE BACKUP BRANCH
     # This crucial step creates a snapshot of the 'main' branch *before* any file updates occur.
