@@ -1,19 +1,42 @@
+# =========================================================================================
+# PIPELINE TRIGGER AND SCHEDULE CONFIGURATION
+#
+# This pipeline is configured to run on a schedule, not on every code push ('trigger: none').
+# The 'schedules' section defines a cron job that runs the pipeline every Monday at 14:00 UTC (10 AM ET).
+# It will only run against the 'main' branch and is set to 'always: true' to ensure it runs
+# weekly, even if no new code has been committed.
+# =========================================================================================
 trigger: none
 
 schedules:
-  - cron: "0 14 * * 1" # Every Monday at 10 AM ET
+  - cron: "0 14 * * 1"
     displayName: Weekly Sync
     branches:
       include:
         - main
     always: true
 
+# =========================================================================================
+# PIPELINE VARIABLES
+#
+# These variables are defined once here and can be reused throughout the pipeline.
+# This makes it easy to update key values in one central location.
+#   - containerUrl: The source Azure Blob Storage container.
+#   - targetFolderName: The destination folder in the GitHub repo for the synced files.
+#   - backupPrefix: The naming prefix for all backup branches.
+# =========================================================================================
 variables:
   containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod'
-  # NEW: Define the final destination folder name
   targetFolderName: 'ADLS_Backup_Folder'
   backupPrefix: 'backup'
 
+# =========================================================================================
+# JOB DEFINITION
+#
+# This section defines the job that will run on a Microsoft-hosted agent.
+# The entire process of backing up, syncing, and pruning is contained within this single job.
+# It uses the latest Windows virtual machine image.
+# =========================================================================================
 jobs:
 - job: sync_and_backup
   displayName: 'Backup, Sync, and Prune'
@@ -21,10 +44,17 @@ jobs:
     vmImage: 'windows-latest'
 
   steps:
+    # STEP 1: CHECKOUT SOURCE CODE
+    # This step downloads the source code from the GitHub repository onto the agent.
+    # 'fetchDepth: 0' performs a full clone, which is required for branch operations.
+    # 'persistCredentials: true' allows subsequent steps to push changes back to GitHub.
     - checkout: self
       persistCredentials: true
       fetchDepth: 0
 
+    # STEP 2: CONFIGURE GIT
+    # This step configures the user name and email that will be associated with the
+    # commits made by this automated pipeline.
     - task: PowerShell@2
       displayName: 'Configure Git'
       inputs:
@@ -33,7 +63,10 @@ jobs:
           git config --global user.email "gabriel@virtualizehealth.com"
           git config --global user.name "virtualizehealth"
 
-    # This task is unchanged. It correctly creates a snapshot of `main` before any updates.
+    # STEP 3: CREATE BACKUP BRANCH
+    # This crucial step creates a snapshot of the 'main' branch *before* any file updates occur.
+    # It generates a unique branch name (e.g., 'backup/2025-06-10A'), pushes it to GitHub,
+    # and saves the name in a variable ('newBackupBranch') for the cleanup step later.
     - task: PowerShell@2
       displayName: 'Create Backup Branch from Previous State'
       inputs:
@@ -62,6 +95,9 @@ jobs:
           Write-Host "Backup created. Switching back to main to apply updates."
           git checkout main
 
+    # STEP 4: INSTALL AZCOPY
+    # This step downloads AzCopy, a high-performance tool for copying data from Azure Storage.
+    # It is installed in a temporary directory on the agent, so it is not accidentally committed to the repo.
     - task: PowerShell@2
       displayName: 'Install AzCopy to Temp Directory'
       inputs:
@@ -75,7 +111,10 @@ jobs:
           $azcopyExe = Get-ChildItem -Path $azcopyPath -Recurse -Filter "azcopy.exe" | Select-Object -First 1
           echo "##vso[task.setvariable variable=AZCOPY_EXE]$($azcopyExe.FullName)"
 
-    # MODIFIED: This task now syncs directly to the target folder.
+    # STEP 5: SYNC FILES FROM AZURE BLOB STORAGE
+    # This step uses AzCopy to perform a one-way sync from the Azure container to the
+    # 'ADLS_Backup_Folder' in the local repository. The '--delete-destination=true' flag
+    # ensures that the destination folder becomes an exact mirror of the source container.
     - task: AzureCLI@2
       displayName: 'Sync Blobs to ADLS_Backup_Folder'
       inputs:
@@ -84,15 +123,15 @@ jobs:
         scriptLocation: 'inlineScript'
         inlineScript: |
           $ErrorActionPreference = "Stop"
-          # Path to the final destination folder in the repo
           $targetFolderPath = Join-Path -Path "$(Build.SourcesDirectory)" -ChildPath "$(targetFolderName)"
           Write-Host "Syncing files from container to $targetFolderPath"
           New-Item -ItemType Directory -Path $targetFolderPath -Force
-          
-          # Sync directly into the target folder, deleting any files that no longer exist in the source
           & "$(AZCOPY_EXE)" sync "$(containerUrl)" $targetFolderPath --recursive --delete-destination=true
 
-    # MODIFIED: This task is now simpler, as files are already in the correct location.
+    # STEP 6: COMMIT AND PUSH UPDATES
+    # This step takes the changes made by AzCopy and commits them to the 'main' branch.
+    # It first checks if any files were actually changed to avoid creating empty commits.
+    # If changes exist, it commits them with a descriptive message and pushes them to GitHub.
     - task: PowerShell@2
       displayName: 'Commit and Push Updates to main'
       inputs:
@@ -100,10 +139,7 @@ jobs:
         script: |
           $ErrorActionPreference = "Stop"
           Set-Location "$(Build.SourcesDirectory)"
-          
-          # The files are already in ADLS_Backup_Folder. We just need to stage the changes.
           git add -A
-
           if (-not (git diff-index --quiet HEAD --)) {
             Write-Host "Changes detected in $(targetFolderName). Committing to main..."
             git commit -m "Weekly sync of ADLS backup folder - $env:BUILD_BUILDID"
@@ -113,7 +149,10 @@ jobs:
             Write-Host "No changes detected. Nothing to commit."
           }
 
-    # This task is unchanged. It cleans up old backup branches.
+    # STEP 7: PRUNE OLD BACKUP BRANCHES
+    # This is a cleanup step that deletes old backup branches from GitHub. It uses the
+    # 'newBackupBranch' variable set in Step 3 to ensure it does not delete the
+    # backup that was just created during this pipeline run.
     - task: PowerShell@2
       displayName: 'Prune Old Backup Branches'
       inputs:
