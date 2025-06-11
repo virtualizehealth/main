@@ -17,7 +17,7 @@ schedules:
 # These variables define key paths for syncing files.
 # =========================================================================================
 variables:
-  containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod/scripts'
+  containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod/scripts/'
   targetFolderName: 'ADLS_Backup_Folder'
 
 # =========================================================================================
@@ -81,6 +81,7 @@ jobs:
         script: |
           $ErrorActionPreference = "Stop"
           git checkout main
+          git pull origin main
           Set-Location "$(Build.SourcesDirectory)"
           git add -A
           if (-not (git diff-index --quiet HEAD --)) {
