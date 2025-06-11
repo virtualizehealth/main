@@ -80,6 +80,7 @@ jobs:
         targetType: 'inline'
         script: |
           $ErrorActionPreference = "Stop"
+          git checkout main
           Set-Location "$(Build.SourcesDirectory)"
           git add -A
           if (-not (git diff-index --quiet HEAD --)) {
