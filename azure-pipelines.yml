@@ -67,7 +67,7 @@ jobs:
     - task: AzureCLI@2
       displayName: 'Sync Files to ADLS_Backup_Folder'
       inputs:
-        azureSubscription: 'Virtualize Health(726fbb03-a12a-4620-b068-0c0fe0629c1b)'
+        azureSubscription: 'Virtualize Health Azure Connection'
         scriptType: 'ps'
         scriptLocation: 'inlineScript'
         inlineScript: |
