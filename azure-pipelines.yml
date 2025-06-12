@@ -63,7 +63,7 @@ jobs:
           echo "##vso[task.setvariable variable=AZCOPY_EXE]$($azcopyExe.FullName)"
 
     # STEP 4: Sync Files from Azure Blob Storage
-    # Authenticates AzCopy using Azure CLI credentials and performs the sync operation.
+    # Configures AzCopy to use Azure CLI credentials and performs the sync operation.
     - task: AzureCLI@2
       displayName: 'Sync Files to ADLS_Backup_Folder'
       inputs:
@@ -73,45 +73,31 @@ jobs:
         inlineScript: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "Attempting AzCopy login using Azure CLI's managed identity..."
-          try {
-              # Try AzCopy's built-in identity login first
-              & "$(AZCOPY_EXE)" login --identity | Write-Host
-          } catch {
-              # If --identity fails, fall back to getting the token directly from Azure CLI
-              Write-Warning "AzCopy login --identity failed. Trying to get token from Azure CLI..."
+          Write-Host "Setting AZCOPY_AUTO_LOGIN_TYPE to AZCLI..."
+          $env:AZCOPY_AUTO_LOGIN_TYPE="AZCLI"
 
-              $accessToken = az account get-access-token --resource-type=storage --query accessToken --output tsv
-              if ([string]::IsNullOrEmpty($accessToken)) {
-                  throw "Failed to retrieve access token from Azure CLI."
-              }
-              Write-Host "Successfully retrieved access token. Setting AZCOPY_OAUTH_TOKEN."
-              $env:AZCOPY_OAUTH_TOKEN = $accessToken
-          }
+          # The AzureCLI@2 task inherently logs in to Azure CLI using the 'azureSubscription' service connection.
+          # We can optionally run 'az account show' to verify login, though it's not strictly necessary for AzCopy to work.
+          Write-Host "Verifying Azure CLI login..."
+          az account show | Out-Host
 
-          # Parse the source folder name from the container URL
           $uri = [System.Uri]"$(containerUrl)"
           $sourceFolderName = $uri.AbsolutePath.TrimEnd('/').Split('/')[-1]
           Write-Host "Determined source folder name to be: $sourceFolderName"
 
-          # Construct the full destination path
           $parentFolderPath = Join-Path "$(Build.SourcesDirectory)" "$(targetFolderName)"
           $syncDestinationPath = Join-Path -Path $parentFolderPath -ChildPath $sourceFolderName
 
-          # Ensure the destination directory exists
           New-Item -ItemType Directory -Path $parentFolderPath -Force
 
           Write-Host "Syncing files from container to $syncDestinationPath"
-          # Execute AzCopy sync. It will use the authentication established above.
+          # AzCopy will now automatically use the Azure CLI credentials because AZCOPY_AUTO_LOGIN_TYPE is set.
           & "$(AZCOPY_EXE)" sync "$(containerUrl)" $syncDestinationPath --recursive --delete-destination=true
 
-          # Good practice: Clear the sensitive environment variable after use
-          if ($env:AZCOPY_OAUTH_TOKEN) {
-              Remove-Item Env:AZCOPY_OAUTH_TOKEN -ErrorAction SilentlyContinue
-              Write-Host "AZCOPY_OAUTH_TOKEN environment variable cleared."
-          }
-
           Write-Host "AzCopy command completed."
+
+          # Clean up the environment variable if you wish, though it's typically scoped to the task.
+          # Remove-Item Env:AZCOPY_AUTO_LOGIN_TYPE -ErrorAction SilentlyContinue
 
     # STEP 5: Commit and Push Updates
     # Commits any changes made by the sync operation and pushes them to the 'main' branch.
