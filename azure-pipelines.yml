@@ -68,6 +68,11 @@ jobs:
         scriptLocation: 'inlineScript'
         inlineScript: |
           $ErrorActionPreference = "Stop"
+
+          # Authenticate AzCopy using the Azure CLI's context (Managed Identity/Service Principal)
+          Write-Host "Authenticating AzCopy using Azure CLI credentials..."
+          & "$(AZCOPY_EXE)" login --identity
+
           $uri = [System.Uri]"$(containerUrl)"
           $sourceFolderName = $uri.AbsolutePath.TrimEnd('/').Split('/')[-1]
           Write-Host "Determined source folder name to be: $sourceFolderName"
