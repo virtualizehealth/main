@@ -1,29 +1,3 @@
-# =========================================================================================
-# PIPELINE TRIGGER AND SCHEDULE CONFIGURATION
-# This pipeline runs every Monday at 14:00 UTC (10 AM ET) to sync files.
-# =========================================================================================
-trigger: none
-
-schedules:
-  - cron: "0 14 * * 1"
-    displayName: Weekly Sync
-    branches:
-      include:
-        - main
-    always: true
-
-# =========================================================================================
-# PIPELINE VARIABLES
-# These variables define key paths for syncing files.
-# =========================================================================================
-variables:
-  containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod/blob_file_folder2/'
-  targetFolderName: 'ADLS_Backup_Folder'
-
-# =========================================================================================
-# JOB DEFINITION
-# Defines the job for syncing files from Azure Blob Storage.
-# =========================================================================================
 jobs:
 - job: sync_files
   displayName: 'Sync Files from Azure Storage'
@@ -31,12 +5,14 @@ jobs:
     vmImage: 'windows-latest'
 
   steps:
-    # STEP 1: CHECKOUT SOURCE CODE
+    # STEP 1: Checkout Source Code
+    # Checks out the repository's source code.
     - checkout: self
       persistCredentials: true
       fetchDepth: 0
 
-    # STEP 2: CONFIGURE GIT
+    # STEP 2: Configure Git
+    # Sets up global Git user email and name for commit operations.
     - task: PowerShell@2
       displayName: 'Configure Git'
       inputs:
@@ -45,7 +21,8 @@ jobs:
           git config --global user.email "automation@gmail.com"
           git config --global user.name "automation"
 
-    # STEP 3: INSTALL AZCOPY
+    # STEP 3: Install AzCopy
+    # Downloads, extracts, and sets the path to the AzCopy executable.
     - task: PowerShell@2
       displayName: 'Install AzCopy'
       inputs:
@@ -59,8 +36,8 @@ jobs:
           $azcopyExe = Get-ChildItem -Path $azcopyPath -Recurse -Filter "azcopy.exe" | Select-Object -First 1
           echo "##vso[task.setvariable variable=AZCOPY_EXE]$($azcopyExe.FullName)"
 
-    # STEP 4: SYNC FILES FROM AZURE BLOB STORAGE
-    # STEP 4: SYNC FILES FROM AZURE BLOB STORAGE
+    # STEP 4: Sync Files from Azure Blob Storage
+    # Authenticates AzCopy using Azure CLI credentials and performs the sync operation.
     - task: AzureCLI@2
       displayName: 'Sync Files to ADLS_Backup_Folder'
       inputs:
@@ -71,13 +48,13 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           Write-Host "Attempting AzCopy login using Azure CLI's managed identity..."
-          # Try the --identity first, as it's the simplest if it works
           try {
+              # Try AzCopy's built-in identity login first
               & "$(AZCOPY_EXE)" login --identity | Write-Host
           } catch {
+              # If --identity fails, fall back to getting the token directly from Azure CLI
               Write-Warning "AzCopy login --identity failed. Trying to get token from Azure CLI..."
-              # Fallback: Get an access token from Azure CLI and pass it to AzCopy
-              # This ensures AzCopy uses the same authenticated context as the AzureCLI@2 task
+
               $accessToken = az account get-access-token --resource-type=storage --query accessToken --output tsv
               if ([string]::IsNullOrEmpty($accessToken)) {
                   throw "Failed to retrieve access token from Azure CLI."
@@ -86,28 +63,32 @@ jobs:
               $env:AZCOPY_OAUTH_TOKEN = $accessToken
           }
 
+          # Parse the source folder name from the container URL
           $uri = [System.Uri]"$(containerUrl)"
           $sourceFolderName = $uri.AbsolutePath.TrimEnd('/').Split('/')[-1]
           Write-Host "Determined source folder name to be: $sourceFolderName"
 
+          # Construct the full destination path
           $parentFolderPath = Join-Path "$(Build.SourcesDirectory)" "$(targetFolderName)"
           $syncDestinationPath = Join-Path -Path $parentFolderPath -ChildPath $sourceFolderName
 
+          # Ensure the destination directory exists
           New-Item -ItemType Directory -Path $parentFolderPath -Force
 
           Write-Host "Syncing files from container to $syncDestinationPath"
-          # Now, execute AzCopy. It should use the --identity login, or the AZCOPY_OAUTH_TOKEN environment variable.
+          # Execute AzCopy sync. It will use the authentication established above.
           & "$(AZCOPY_EXE)" sync "$(containerUrl)" $syncDestinationPath --recursive --delete-destination=true
 
-          # It's good practice to clear the token environment variable after use if set
+          # Good practice: Clear the sensitive environment variable after use
           if ($env:AZCOPY_OAUTH_TOKEN) {
-              Remove-Item Env:AZCOPY_OAUTH_TOKEN
+              Remove-Item Env:AZCOPY_OAUTH_TOKEN -ErrorAction SilentlyContinue
               Write-Host "AZCOPY_OAUTH_TOKEN environment variable cleared."
           }
 
           Write-Host "AzCopy command completed."
 
-    # STEP 5: COMMIT AND PUSH UPDATES
+    # STEP 5: Commit and Push Updates
+    # Commits any changes made by the sync operation and pushes them to the 'main' branch.
     - task: PowerShell@2
       displayName: 'Commit and Push Updates to main'
       inputs:
@@ -118,6 +99,7 @@ jobs:
           git pull origin main
           Set-Location "$(Build.SourcesDirectory)"
           git add -A
+          # Check if there are any pending changes to commit
           if (-not (git diff-index --quiet HEAD --)) {
             Write-Host "Changes detected in $(targetFolderName). Committing to main..."
             git commit -m "Weekly sync of ADLS backup folder - $env:BUILD_BUILDID"
