@@ -1,3 +1,29 @@
+# =========================================================================================
+# PIPELINE TRIGGER AND SCHEDULE CONFIGURATION
+# This pipeline runs every Monday at 14:00 UTC (10 AM ET) to sync files.
+# =========================================================================================
+trigger: none
+
+schedules:
+  - cron: "0 14 * * 1"
+    displayName: Weekly Sync
+    branches:
+      include:
+        - main
+    always: true
+
+# =========================================================================================
+# PIPELINE VARIABLES
+# These variables define key paths for syncing files.
+# =========================================================================================
+variables:
+  containerUrl: 'https://vhdcomstor01.blob.core.windows.net/commons-prod/blob_file_folder2/'
+  targetFolderName: 'ADLS_Backup_Folder'
+
+# =========================================================================================
+# JOB DEFINITION
+# Defines the job for syncing files from Azure Blob Storage.
+# =========================================================================================
 jobs:
 - job: sync_files
   displayName: 'Sync Files from Azure Storage'
